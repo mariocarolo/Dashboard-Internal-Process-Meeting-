@@ -109,28 +109,21 @@ if JsCode is not None:
     }
 
 # Delete-column cell renderer: renders a ✕ icon; clicking sets the cell value to true
+# Cell renderer returns an HTML string (React-safe); click is handled via onCellClicked below
 _DELETE_RENDERER = None
+_ON_CELL_CLICKED = None
 if JsCode is not None:
     _DELETE_RENDERER = JsCode("""
 function(params) {
     if (!params.data) return '';
-    var span = document.createElement('span');
-    span.innerHTML = '✕';
-    span.title = 'Excluir';
-    span.style.cssText = 'display:block;text-align:center;cursor:pointer;color:#d4b8b8;font-size:13px;line-height:52px;user-select:none;';
-    span.addEventListener('mouseenter', function() {
-        span.style.color = '#a03030';
-        span.style.fontWeight = '700';
-    });
-    span.addEventListener('mouseleave', function() {
-        span.style.color = '#d4b8b8';
-        span.style.fontWeight = '400';
-    });
-    span.addEventListener('click', function(e) {
-        e.stopPropagation();
-        params.node.setDataValue('_del', true);
-    });
-    return span;
+    return '<span style="display:block;text-align:center;cursor:pointer;color:#d4b8b8;font-size:14px;line-height:52px;" title="Excluir">&#x2715;</span>';
+}
+""")
+    _ON_CELL_CLICKED = JsCode("""
+function(event) {
+    if (event.colDef && event.colDef.field === '_del' && event.data) {
+        event.node.setDataValue('_del', true);
+    }
 }
 """)
 
@@ -298,6 +291,8 @@ def make_grid(todos: list[dict], with_owner: bool = False, with_delete: bool = F
     )
     if _ROW_CLASS_RULES:
         grid_opts["rowClassRules"] = _ROW_CLASS_RULES
+    if with_delete and _ON_CELL_CLICKED:
+        grid_opts["onCellClicked"] = _ON_CELL_CLICKED
 
     gb.configure_grid_options(**grid_opts)
 
