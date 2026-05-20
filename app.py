@@ -9,7 +9,10 @@ from datetime import date
 from pathlib import Path
 from st_aggrid import AgGrid, GridUpdateMode
 from st_aggrid.grid_options_builder import GridOptionsBuilder
-from st_aggrid.shared import JsCode
+try:
+    from st_aggrid.shared import JsCode
+except ImportError:
+    from st_aggrid import JsCode
 
 st.set_page_config(
     page_title="Internal Process Meeting",
@@ -163,12 +166,16 @@ def todos_to_df(todos: list[dict], with_owner: bool = False) -> pd.DataFrame:
         "company":     t.get("company", ""),
         "notes":       t.get("notes", ""),
         "description": t.get("description", ""),
-        "waiting":     bool(t.get("waiting_on_them", False)),  # real bool for checkbox
+        "waiting":     bool(t.get("waiting_on_them", False)),
         "status":      t.get("status", "Open"),
         "category":    t.get("category", CATEGORIES[0]),
         "updated":     t.get("updated", ""),
     } for t in todos]
-    cols = ["id", "owner", "company", "notes", "description", "waiting", "status", "category", "updated"]
+    # Column order determines display order in AG Grid
+    if with_owner:
+        cols = ["owner", "company", "notes", "description", "waiting", "status", "updated", "id", "category"]
+    else:
+        cols = ["company", "notes", "description", "waiting", "status", "updated", "id", "category", "owner"]
     df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     df["waiting"] = df["waiting"].astype(bool)
     return df
@@ -180,6 +187,7 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
                     unsafe_allow_html=True)
         return None, None
 
+    # Column order is determined by DataFrame column order
     df = todos_to_df(sort_by_company(todos), with_owner=with_owner)
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(
@@ -190,19 +198,17 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
     # Hidden columns
     gb.configure_column("id",       hide=True)
     gb.configure_column("category", hide=True)
+    if not with_owner:
+        gb.configure_column("owner", hide=True)
 
-    # Column order and config
-    # Owner (first, only when with_owner=True)
     gb.configure_column(
-        "owner", hide=not with_owner,
-        headerName="Resp.", width=75,
-        editable=with_owner,
-        cellEditor="agSelectCellEditor" if with_owner else None,
-        cellEditorParams={"values": list(PEOPLE.keys())} if with_owner else None,
+        "owner", headerName="Resp.", width=75,
+        editable=True,
+        cellEditor="agSelectCellEditor",
+        cellEditorParams={"values": list(PEOPLE.keys())},
         cellStyle={"fontFamily": "'JetBrains Mono',monospace",
                    "fontWeight": "700", "fontSize": "0.76rem", "color": "#692730"},
     )
-
     gb.configure_column(
         "company", headerName="Companhia", width=112, editable=True,
         cellStyle={"fontFamily": "'JetBrains Mono',monospace",
@@ -218,16 +224,33 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
         wrapText=True, autoHeight=True,
         cellStyle={"fontWeight": "500", "color": "#1a1512", "fontSize": "0.82rem"},
     )
-
-    # ⏳ Waiting — checkbox, BEFORE status
+    # ⏳ Waiting — checkbox before status
     gb.configure_column(
-        "waiting", headerName="⏳", width=55,
+        "waiting", headerName="⏳", width=60,
         editable=True,
-        cellRenderer="agCheckboxCellRenderer",
-        cellEditor="agCheckboxCellEditor",
-        cellStyle={"display": "flex", "alignItems": "center", "justifyContent": "center"},
+        type=["numericColumn"],
+        cellRenderer=JsCode("""
+function(params) {
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = params.value === true;
+    cb.style.cursor = 'pointer';
+    cb.style.accentColor = '#692730';
+    cb.style.width = '15px';
+    cb.style.height = '15px';
+    cb.addEventListener('change', function() {
+        params.setValue(cb.checked);
+    });
+    var wrapper = document.createElement('div');
+    wrapper.style.display = 'flex';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.justifyContent = 'center';
+    wrapper.style.height = '100%';
+    wrapper.appendChild(cb);
+    return wrapper;
+}
+"""),
     )
-
     gb.configure_column(
         "status", headerName="Status", width=148, editable=True,
         cellEditor="agSelectCellEditor",
@@ -249,18 +272,6 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
         enableCellTextSelection=True,
         suppressRowClickSelection=False,
         getRowClass=_ROW_CLASS_JS,
-        # Column order — must match the sequence we want displayed
-        columnDefs=[
-            {"field": "owner",       "hide": not with_owner},
-            {"field": "company"},
-            {"field": "notes"},
-            {"field": "description"},
-            {"field": "waiting"},
-            {"field": "status"},
-            {"field": "updated"},
-            {"field": "id",       "hide": True},
-            {"field": "category", "hide": True},
-        ],
     )
 
     resp = AgGrid(
