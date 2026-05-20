@@ -109,23 +109,6 @@ if JsCode is not None:
     }
 
 # Delete-column cell renderer: renders a ✕ icon; clicking sets the cell value to true
-# Cell renderer returns an HTML string (React-safe); click is handled via onCellClicked below
-_DELETE_RENDERER = None
-_ON_CELL_CLICKED = None
-if JsCode is not None:
-    _DELETE_RENDERER = JsCode("""
-function(params) {
-    if (!params.data) return '';
-    return '<span style="display:block;text-align:center;cursor:pointer;color:#d4b8b8;font-size:14px;line-height:52px;" title="Excluir">&#x2715;</span>';
-}
-""")
-    _ON_CELL_CLICKED = JsCode("""
-function(event) {
-    if (event.colDef && event.colDef.field === '_del' && event.data) {
-        event.node.setDataValue('_del', true);
-    }
-}
-""")
 
 # ── Persistence ────────────────────────────────────────────────────────────────
 
@@ -218,13 +201,15 @@ def make_grid(todos: list[dict], with_owner: bool = False, with_delete: bool = F
         cellStyle={"fontFamily": "'DM Sans', sans-serif"},
     )
 
-    # Delete column: pinned left, ✕ icon renderer (only in tab_all_todos)
-    if with_delete and _DELETE_RENDERER:
+    # Delete column: checkbox — one click marks for deletion; sync_grid removes the row
+    # Uses the same agCheckboxCellRenderer pattern as the working `waiting` column.
+    if with_delete:
         gb.configure_column(
-            "_del", headerName="", width=42, editable=True,
+            "_del", headerName="🗑", width=48, editable=True,
+            cellRenderer="agCheckboxCellRenderer",
+            cellEditor="agCheckboxCellEditor",
+            cellStyle={"display": "flex", "alignItems": "center", "justifyContent": "center"},
             pinned="left",
-            cellRenderer=_DELETE_RENDERER,
-            cellStyle={"padding": "0", "borderRight": "1px solid #e8e2d8"},
             suppressSizeToFit=True,
         )
     else:
@@ -291,16 +276,13 @@ def make_grid(todos: list[dict], with_owner: bool = False, with_delete: bool = F
     )
     if _ROW_CLASS_RULES:
         grid_opts["rowClassRules"] = _ROW_CLASS_RULES
-    if with_delete and _ON_CELL_CLICKED:
-        grid_opts["onCellClicked"] = _ON_CELL_CLICKED
-
     gb.configure_grid_options(**grid_opts)
 
-    use_jscode = JsCode is not None and (bool(_ROW_CLASS_RULES) or (with_delete and _DELETE_RENDERER is not None))
+    use_jscode = JsCode is not None and bool(_ROW_CLASS_RULES)
     resp = AgGrid(
         df,
         gridOptions=gb.build(),
-        update_on=["cellValueChanged"],
+        update_on=["cellValueChanged", "selectionChanged"],
         theme="alpine",
         fit_columns_on_grid_load=False,
         allow_unsafe_jscode=use_jscode,
