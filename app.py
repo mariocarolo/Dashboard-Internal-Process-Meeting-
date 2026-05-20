@@ -7,7 +7,7 @@ import base64
 import pandas as pd
 from datetime import date
 from pathlib import Path
-from st_aggrid import AgGrid, GridUpdateMode
+from st_aggrid import AgGrid
 from st_aggrid.grid_options_builder import GridOptionsBuilder
 try:
     from st_aggrid.shared import JsCode
@@ -117,17 +117,18 @@ function(params) {
     var span = document.createElement('span');
     span.innerHTML = '✕';
     span.title = 'Excluir';
-    span.style.cssText = 'display:block;text-align:center;cursor:pointer;color:#d4b8b8;'
-        + 'font-size:13px;line-height:52px;user-select:none;transition:color 0.1s;';
+    span.style.cssText = 'display:block;text-align:center;cursor:pointer;color:#d4b8b8;font-size:13px;line-height:52px;user-select:none;';
     span.addEventListener('mouseenter', function() {
-        span.style.color = '#a03030'; span.style.fontWeight = '700';
+        span.style.color = '#a03030';
+        span.style.fontWeight = '700';
     });
     span.addEventListener('mouseleave', function() {
-        span.style.color = '#d4b8b8'; span.style.fontWeight = '400';
+        span.style.color = '#d4b8b8';
+        span.style.fontWeight = '400';
     });
     span.addEventListener('click', function(e) {
         e.stopPropagation();
-        params.setValue(true);
+        params.node.setDataValue('_del', true);
     });
     return span;
 }
@@ -304,7 +305,7 @@ def make_grid(todos: list[dict], with_owner: bool = False, with_delete: bool = F
     resp = AgGrid(
         df,
         gridOptions=gb.build(),
-        update_mode=GridUpdateMode.VALUE_CHANGED,
+        update_on=["cellValueChanged"],
         theme="alpine",
         fit_columns_on_grid_load=False,
         allow_unsafe_jscode=use_jscode,
