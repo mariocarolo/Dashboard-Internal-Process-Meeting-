@@ -12,7 +12,10 @@ from st_aggrid.grid_options_builder import GridOptionsBuilder
 try:
     from st_aggrid.shared import JsCode
 except ImportError:
-    from st_aggrid import JsCode
+    try:
+        from st_aggrid import JsCode
+    except ImportError:
+        JsCode = None
 
 st.set_page_config(
     page_title="Internal Process Meeting",
@@ -40,14 +43,7 @@ STATUS_META = {
 
 CATEGORIES = ["Operacional", "Investidas (Resultados)", "Pipeline", "Consignado"]
 
-# Row-class JS: highlight waiting rows with dashed outline + warm tint
-_ROW_CLASS_JS = JsCode("""
-function(params) {
-    if (params.data && params.data.waiting === true) return 'sg-row-waiting';
-    return '';
-}
-""")
-
+# ── AG Grid custom CSS ─────────────────────────────────────────────────────────
 GRID_CSS = {
     ".ag-root-wrapper": {
         "border": "1px solid #ddd8d0 !important",
@@ -60,28 +56,23 @@ GRID_CSS = {
     },
     ".ag-header-cell-text": {
         "color": "#692730 !important",
-        "font-size": "0.65rem !important",
+        "font-size": "0.66rem !important",
         "text-transform": "uppercase !important",
         "letter-spacing": "0.09em !important",
         "font-weight": "700 !important",
         "font-family": "'JetBrains Mono', monospace !important",
     },
-    ".ag-row": {
-        "background-color": "#ffffff !important",
-        "border-bottom": "1px solid #f0ece5 !important",
-    },
+    ".ag-row": {"background-color": "#ffffff !important", "border-bottom": "1px solid #f0ece5 !important"},
     ".ag-row-odd": {"background-color": "#faf8f5 !important"},
     ".ag-row-hover": {"background-color": "#f8f0ee !important"},
     ".ag-row-selected": {"background-color": "#f3e8e8 !important"},
-    # Waiting rows: amber dashed outline + warm tint
+    # Waiting rows: dashed amber outline + warm tint
     ".ag-row.sg-row-waiting": {
         "background-color": "#fffaf4 !important",
         "outline": "1.5px dashed #c8823a !important",
         "outline-offset": "-2px !important",
     },
-    ".ag-row.sg-row-waiting .ag-cell": {
-        "color": "#4a2808 !important",
-    },
+    ".ag-row.sg-row-waiting .ag-cell": {"color": "#4a2808 !important"},
     ".ag-cell": {
         "font-size": "0.82rem !important",
         "color": "#2a2018 !important",
@@ -102,7 +93,6 @@ GRID_CSS = {
         "border-radius": "6px !important",
         "box-shadow": "0 4px 16px rgba(105,39,48,0.15) !important",
     },
-    # Checkbox cell
     ".ag-checkbox-input-wrapper input": {
         "width": "15px !important",
         "height": "15px !important",
@@ -111,7 +101,14 @@ GRID_CSS = {
     },
 }
 
-# ── Persistence ───────────────────────────────────────────────────────────────
+# Row class rule: adds CSS class to waiting rows (requires JsCode + allow_unsafe_jscode)
+_ROW_CLASS_RULES = {}
+if JsCode is not None:
+    _ROW_CLASS_RULES = {
+        "sg-row-waiting": JsCode("function(params) { return params.data && params.data.waiting === true; }")
+    }
+
+# ── Persistence ────────────────────────────────────────────────────────────────
 
 def load_data() -> list[dict]:
     if DATA_FILE.exists():
@@ -157,7 +154,7 @@ def open_count(todos: list[dict]) -> int:
 def sort_by_company(todos: list[dict]) -> list[dict]:
     return sorted(todos, key=lambda t: t.get("company", "").lower())
 
-# ── AG Grid ───────────────────────────────────────────────────────────────────
+# ── AG Grid core ───────────────────────────────────────────────────────────────
 
 def todos_to_df(todos: list[dict], with_owner: bool = False) -> pd.DataFrame:
     rows = [{
@@ -171,7 +168,8 @@ def todos_to_df(todos: list[dict], with_owner: bool = False) -> pd.DataFrame:
         "category":    t.get("category", CATEGORIES[0]),
         "updated":     t.get("updated", ""),
     } for t in todos]
-    # Column order determines display order in AG Grid
+    # Column order determines display order in AgGrid.
+    # Owner comes first when shown; waiting always before status.
     if with_owner:
         cols = ["owner", "company", "notes", "description", "waiting", "status", "updated", "id", "category"]
     else:
@@ -187,12 +185,12 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
                     unsafe_allow_html=True)
         return None, None
 
-    # Column order is determined by DataFrame column order
     df = todos_to_df(sort_by_company(todos), with_owner=with_owner)
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(
         editable=False, resizable=True, sortable=False,
         filter=False, suppressMenu=True, suppressMovable=True,
+        cellStyle={"fontFamily": "'DM Sans', sans-serif"},
     )
 
     # Hidden columns
@@ -201,18 +199,19 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
     if not with_owner:
         gb.configure_column("owner", hide=True)
 
+    if with_owner:
+        gb.configure_column(
+            "owner", headerName="Resp.", width=80, editable=True,
+            cellEditor="agSelectCellEditor",
+            cellEditorParams={"values": list(PEOPLE.keys())},
+            cellStyle={"fontFamily": "'JetBrains Mono',monospace",
+                       "fontWeight": "700", "fontSize": "0.78rem", "color": "#692730"},
+        )
+
     gb.configure_column(
-        "owner", headerName="Resp.", width=75,
-        editable=True,
-        cellEditor="agSelectCellEditor",
-        cellEditorParams={"values": list(PEOPLE.keys())},
+        "company", headerName="Companhia", width=115, editable=True,
         cellStyle={"fontFamily": "'JetBrains Mono',monospace",
-                   "fontWeight": "700", "fontSize": "0.76rem", "color": "#692730"},
-    )
-    gb.configure_column(
-        "company", headerName="Companhia", width=112, editable=True,
-        cellStyle={"fontFamily": "'JetBrains Mono',monospace",
-                   "fontSize": "0.73rem", "fontWeight": "600", "color": "#4a3e38"},
+                   "fontSize": "0.74rem", "fontWeight": "600", "color": "#4a3e38"},
     )
     gb.configure_column(
         "notes", headerName="Anotações", flex=2, editable=True,
@@ -224,32 +223,12 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
         wrapText=True, autoHeight=True,
         cellStyle={"fontWeight": "500", "color": "#1a1512", "fontSize": "0.82rem"},
     )
-    # ⏳ Waiting — checkbox before status
+    # ⏳ Waiting — single-click checkbox, appears before Status
     gb.configure_column(
-        "waiting", headerName="⏳", width=60,
-        editable=True,
-        type=["numericColumn"],
-        cellRenderer=JsCode("""
-function(params) {
-    var cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = params.value === true;
-    cb.style.cursor = 'pointer';
-    cb.style.accentColor = '#692730';
-    cb.style.width = '15px';
-    cb.style.height = '15px';
-    cb.addEventListener('change', function() {
-        params.setValue(cb.checked);
-    });
-    var wrapper = document.createElement('div');
-    wrapper.style.display = 'flex';
-    wrapper.style.alignItems = 'center';
-    wrapper.style.justifyContent = 'center';
-    wrapper.style.height = '100%';
-    wrapper.appendChild(cb);
-    return wrapper;
-}
-"""),
+        "waiting", headerName="⏳", width=60, editable=True,
+        cellRenderer="agCheckboxCellRenderer",
+        cellEditor="agCheckboxCellEditor",
+        cellStyle={"display": "flex", "alignItems": "center", "justifyContent": "center"},
     )
     gb.configure_column(
         "status", headerName="Status", width=148, editable=True,
@@ -258,29 +237,34 @@ function(params) {
         cellStyle={"fontSize": "0.74rem"},
     )
     gb.configure_column(
-        "updated", headerName="Atualizado", width=92, editable=False,
-        cellStyle={"color": "#b0a898", "fontSize": "0.63rem",
+        "updated", headerName="Atualizado", width=95, editable=False,
+        cellStyle={"color": "#b0a898", "fontSize": "0.64rem",
                    "fontFamily": "'JetBrains Mono',monospace"},
     )
 
     gb.configure_selection(selection_mode="single", use_checkbox=False)
-    gb.configure_grid_options(
+
+    grid_opts = dict(
         domLayout="autoHeight",
         headerHeight=36,
         rowHeight=52,
         stopEditingWhenCellsLoseFocus=True,
         enableCellTextSelection=True,
         suppressRowClickSelection=False,
-        getRowClass=_ROW_CLASS_JS,
     )
+    if _ROW_CLASS_RULES:
+        grid_opts["rowClassRules"] = _ROW_CLASS_RULES
 
+    gb.configure_grid_options(**grid_opts)
+
+    use_jscode = JsCode is not None and bool(_ROW_CLASS_RULES)
     resp = AgGrid(
         df,
         gridOptions=gb.build(),
         update_mode=GridUpdateMode.VALUE_CHANGED,
         theme="alpine",
         fit_columns_on_grid_load=False,
-        allow_unsafe_jscode=True,
+        allow_unsafe_jscode=use_jscode,
         custom_css=GRID_CSS,
         key=key,
     )
@@ -296,6 +280,7 @@ function(params) {
     return resp.get("data"), sel_id
 
 def sync_grid(grid_df, scope_ids: list[str]) -> bool:
+    """Apply edits from the grid back to session_state. Returns True if anything changed."""
     if grid_df is None:
         return False
     try:
@@ -332,9 +317,12 @@ def sync_grid(grid_df, scope_ids: list[str]) -> bool:
                 t["updated"] = str(date.today())
                 changed = True
 
-        # Boolean waiting (checkbox value)
+        # Boolean waiting (checkbox)
         raw_w = row.get("waiting", False)
-        nv_w = bool(raw_w) if not isinstance(raw_w, str) else raw_w.lower() in ("true", "sim", "1")
+        if isinstance(raw_w, str):
+            nv_w = raw_w.lower() in ("true", "sim", "1")
+        else:
+            nv_w = bool(raw_w)
         ov_w = bool(t.get("waiting_on_them", False))
         if nv_w != ov_w:
             t["waiting_on_them"] = nv_w
@@ -349,17 +337,16 @@ def sync_grid(grid_df, scope_ids: list[str]) -> bool:
         flush()
     return changed
 
-# ── Logo ──────────────────────────────────────────────────────────────────────
+# ── Logo ───────────────────────────────────────────────────────────────────────
 
 def logo_html() -> str:
     if LOGO_PATH.exists():
         with open(LOGO_PATH, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
-        return f'<img src="data:image/png;base64,{b64}" style="height:38px;opacity:0.92">'
-    return ('<span style="font-family:\'Cinzel\',serif;font-size:1.45rem;'
-            'font-weight:600;color:#692730;letter-spacing:0.05em">SIGULER GUFF</span>')
+        return f'<img src="data:image/png;base64,{b64}" style="height:36px">'
+    return '<span style="font-family:\'Cinzel\',serif;font-size:1.45rem;font-weight:600;color:#692730;letter-spacing:0.05em">SIGULER GUFF</span>'
 
-# ── CSS ───────────────────────────────────────────────────────────────────────
+# ── CSS ────────────────────────────────────────────────────────────────────────
 
 def inject_css() -> None:
     st.markdown("""
@@ -379,8 +366,8 @@ section[data-testid="stSidebar"] { display: none; }
 /* ── Header ── */
 .sg-header {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 1.5rem 0 1.1rem 0;
-    border-bottom: 2px solid #ddd8d0; margin-bottom: 1.3rem;
+    padding: 1.6rem 0 1.2rem 0;
+    border-bottom: 2px solid #ddd8d0; margin-bottom: 1.4rem;
 }
 .sg-header h1 { font-size: 1.2rem; font-weight: 600; color: #1a1512; margin: 0 0 3px 0; }
 .sg-header p  { font-size: 0.7rem; color: #a09080; font-family:'JetBrains Mono',monospace;
@@ -393,15 +380,14 @@ section[data-testid="stSidebar"] { display: none; }
     border: 1px solid #ddd8d0; border-radius: 9px; padding: 0.85rem 1.1rem;
     box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
-.sg-stat-value { font-size: 1.75rem; font-weight: 700;
-    font-family:'JetBrains Mono',monospace; line-height: 1; }
+.sg-stat-value { font-size: 1.75rem; font-weight: 700; font-family:'JetBrains Mono',monospace; line-height: 1; }
 .sg-stat-label { font-size: 0.61rem; font-weight: 500; color: #a09080;
     text-transform: uppercase; letter-spacing: 0.1em; margin-top: 4px; }
 
-/* ── Section header (person OR company) ── */
+/* ── Section headers (person & company share same style) ── */
 .sg-section-header {
     display: flex; align-items: center; gap: 0.8rem;
-    padding: 0.6rem 1.1rem;
+    padding: 0.65rem 1.1rem;
     border-radius: 8px 8px 0 0;
     margin-top: 1.2rem; margin-bottom: 0;
 }
@@ -409,14 +395,14 @@ section[data-testid="stSidebar"] { display: none; }
     font-family: 'JetBrains Mono', monospace; font-size: 0.92rem;
     font-weight: 700; color: #ffffff; letter-spacing: 0.05em;
 }
-.sg-section-meta { font-size: 0.68rem; color: rgba(255,255,255,0.7);
+.sg-section-meta { font-size: 0.7rem; color: rgba(255,255,255,0.75);
     font-family:'JetBrains Mono',monospace; letter-spacing: 0.06em; }
 
-/* ── Grid hint ── */
-.sg-hint { font-size: 0.61rem; color: #c0b8b0; font-family:'JetBrains Mono',monospace;
-    margin-top: 3px; margin-bottom: 0.6rem; letter-spacing: 0.04em; }
+/* ── Hint ── */
+.sg-hint { font-size: 0.62rem; color: #c0b8b0; font-family:'JetBrains Mono',monospace;
+    margin-top: 3px; letter-spacing: 0.04em; }
 
-/* ── Category header (All To-Dos) ── */
+/* ── Category header ── */
 .sg-cat-header {
     font-size: 0.66rem; font-weight: 700; color: #692730;
     text-transform: uppercase; letter-spacing: 0.12em;
@@ -473,7 +459,7 @@ label { font-size: 0.67rem !important; color: #a09080 !important;
 .stMultiSelect > div { border-color: #ddd8d0 !important; background: #faf8f4 !important; }
 .stMultiSelect [data-baseweb="tag"] { background: #f8eeec !important; color: #692730 !important; }
 
-/* ── Add form ── */
+/* ── Add form card ── */
 .sg-add-card {
     background: #ffffff; border: 1.5px solid #692730;
     border-radius: 9px; padding: 1rem 1.2rem; margin: 0.6rem 0 1rem 0;
@@ -493,7 +479,7 @@ hr { border-color: #e8e2d8 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Shared widgets ────────────────────────────────────────────────────────────
+# ── Shared widgets ─────────────────────────────────────────────────────────────
 
 def render_header() -> None:
     st.markdown(f"""
@@ -506,11 +492,10 @@ def render_header() -> None:
 </div>""", unsafe_allow_html=True)
 
 def render_stats(todos: list[dict]) -> None:
-    t  = len(todos)
-    o  = sum(1 for x in todos if x["status"] == "Open")
-    ip = sum(1 for x in todos if x["status"] == "In Progress")
-    w  = sum(1 for x in todos if x.get("waiting_on_them"))
-    d  = sum(1 for x in todos if x["status"] == "Done")
+    t, o = len(todos), sum(1 for x in todos if x["status"] == "Open")
+    ip   = sum(1 for x in todos if x["status"] == "In Progress")
+    w    = sum(1 for x in todos if x.get("waiting_on_them"))
+    d    = sum(1 for x in todos if x["status"] == "Done")
     st.markdown(f"""
 <div class="sg-stats">
   <div class="sg-stat"><div class="sg-stat-value">{t}</div><div class="sg-stat-label">Total</div></div>
@@ -541,6 +526,7 @@ def render_add_form(default_owner: str = "AM", kp: str = "") -> None:
         notes       = st.text_area("Anotações", height=72, key=f"{kp}notes")
         description = st.text_area("To Do",     height=72, key=f"{kp}desc")
     waiting = st.checkbox("⏳ Aguardando resposta de terceiros", key=f"{kp}w")
+
     bs, bc, _ = st.columns([1.4, 1.4, 6])
     with bs:
         if st.button("Adicionar", key=f"{kp}save", type="primary"):
@@ -557,39 +543,40 @@ def render_add_form(default_owner: str = "AM", kp: str = "") -> None:
                     "created":         str(date.today()),
                     "updated":         str(date.today()),
                 })
-                st.session_state.add_owner     = None
+                st.session_state.add_owner    = None
                 st.session_state.show_add_form = False
                 st.rerun()
             else:
                 st.warning("Companhia e To Do são obrigatórios.")
     with bc:
         if st.button("Cancelar", key=f"{kp}cancel"):
-            st.session_state.add_owner     = None
+            st.session_state.add_owner    = None
             st.session_state.show_add_form = False
             st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
-def grid_actions(sel_id: str | None, key_prefix: str) -> None:
+def grid_action_row(selected_id: str | None, owner_key: str) -> None:
     c1, c2, _ = st.columns([2.2, 2.2, 8])
     with c1:
-        if sel_id:
-            t = get_todo(sel_id)
+        if selected_id:
+            t = get_todo(selected_id)
             if t:
                 lbl = "↩ Reabrir" if t["status"] == "Done" else "✓ Concluído"
-                if st.button(lbl, key=f"done_{key_prefix}"):
-                    t["status"]          = "Open" if t["status"] == "Done" else "Done"
+                if st.button(lbl, key=f"done_{owner_key}_{selected_id[:6]}"):
+                    t["status"] = "Open" if t["status"] == "Done" else "Done"
                     t["waiting_on_them"] = False
-                    t["updated"]         = str(date.today())
+                    t["updated"] = str(date.today())
                     flush(); st.rerun()
     with c2:
-        if sel_id:
-            if st.button("✕ Excluir", key=f"del_{key_prefix}"):
-                delete_todo(sel_id); st.rerun()
+        if selected_id:
+            if st.button("✕ Excluir", key=f"del_{owner_key}_{selected_id[:6]}"):
+                delete_todo(selected_id); st.rerun()
 
-# ── Tab: By Person ────────────────────────────────────────────────────────────
+# ── Tab: By Person ─────────────────────────────────────────────────────────────
 
 def tab_by_person(todos: list[dict]) -> None:
     show_done = st.session_state.show_done
+
     ca, cb, _ = st.columns([2.2, 2.2, 8])
     with ca:
         if st.button("Ocultar Done" if show_done else "Mostrar Done", key="tog_done"):
@@ -610,12 +597,13 @@ def tab_by_person(todos: list[dict]) -> None:
 
         scope_ids = [t["id"] for t in visible]
         gdata, sel_id = make_grid(visible, with_owner=False, key=f"g_bp_{owner}")
+
         if gdata is not None and sync_grid(gdata, scope_ids):
             st.rerun()
 
-        grid_actions(sel_id, f"bp_{owner}")
+        grid_action_row(sel_id, f"bp_{owner}")
         st.markdown('<div class="sg-hint">Clique para selecionar &nbsp;·&nbsp; '
-                    'Duplo clique para editar &nbsp;·&nbsp; Checkbox ⏳ com um clique</div>',
+                    'Duplo clique na célula para editar &nbsp;·&nbsp; Checkbox ⏳ com um clique</div>',
                     unsafe_allow_html=True)
 
         if st.session_state.add_owner == owner:
@@ -626,17 +614,17 @@ def tab_by_person(todos: list[dict]) -> None:
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-# ── Tab: All To-Dos ───────────────────────────────────────────────────────────
+# ── Tab: All To-Dos ────────────────────────────────────────────────────────────
 
 def tab_all_todos(todos: list[dict]) -> None:
     fc1, fc2, fc3, fc4, fc5 = st.columns([2, 2, 2, 2, 3])
     with fc1: f_owner   = st.multiselect("Responsável", list(PEOPLE.keys()), key="f_own")
     with fc2:
         companies = sorted({t["company"] for t in todos})
-        f_company = st.multiselect("Companhia",  companies,                  key="f_co")
-    with fc3: f_status  = st.multiselect("Status",      list(STATUS_META.keys()), key="f_st")
-    with fc4: f_waiting = st.checkbox("Só aguardando",                            key="f_w")
-    with fc5: f_search  = st.text_input("Busca", placeholder="palavra-chave…",    key="f_q")
+        f_company = st.multiselect("Companhia", companies, key="f_co")
+    with fc3: f_status  = st.multiselect("Status", list(STATUS_META.keys()), key="f_st")
+    with fc4: f_waiting = st.checkbox("Só aguardando", key="f_w")
+    with fc5: f_search  = st.text_input("Busca", placeholder="palavra-chave…", key="f_q")
 
     fil = todos
     if f_owner:   fil = [t for t in fil if t["owner"]   in f_owner]
@@ -664,26 +652,31 @@ def tab_all_todos(todos: list[dict]) -> None:
         if gdata is not None and sync_grid(gdata, scope_ids):
             st.rerun()
 
-        grid_actions(sel_id, f"at_{cat[:5]}")
+        grid_action_row(sel_id, f"at_{cat[:4]}")
         st.markdown('<div class="sg-hint">Resp. é a primeira coluna &nbsp;·&nbsp; '
-                    'Duplo clique para editar &nbsp;·&nbsp; Checkbox ⏳ com um clique</div>',
-                    unsafe_allow_html=True)
+                    'Duplo clique para editar</div>', unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
-# ── Tab: By Company ───────────────────────────────────────────────────────────
+# ── Tab: By Company ────────────────────────────────────────────────────────────
 
 def tab_by_company(todos: list[dict]) -> None:
-    companies = sorted({t["company"] for t in todos})  # alphabetical
+    companies = sorted({t["company"] for t in todos})
     co_open   = {c: sum(1 for t in todos if t["company"] == c and t["status"] != "Done")
                  for c in companies}
     top = max(co_open, key=co_open.get) if co_open else "—"
 
-    render_stats_company(todos, companies, top)
-
-    # Cycle through brand shades so adjacent companies are visually distinct
-    shades = ["#692730", "#4a1f28", "#3a1820", "#5a2030", "#692730", "#4a1f28"]
+    st.markdown(f"""
+<div class="sg-stats">
+  <div class="sg-stat"><div class="sg-stat-value">{len(companies)}</div><div class="sg-stat-label">Companhias</div></div>
+  <div class="sg-stat"><div class="sg-stat-value" style="color:#1d4a8a">{open_count(todos)}</div><div class="sg-stat-label">Open</div></div>
+  <div class="sg-stat"><div class="sg-stat-value" style="color:#b87820">{sum(1 for t in todos if t.get("waiting_on_them"))}</div><div class="sg-stat-label">Aguardando</div></div>
+  <div class="sg-stat"><div class="sg-stat-value" style="color:#692730;font-size:0.95rem">{top}</div><div class="sg-stat-label">Mais Pendências</div></div>
+</div>""", unsafe_allow_html=True)
 
     show_done = st.session_state.show_done
+    # Cycle brand shades so adjacent companies look distinct
+    shades = ["#692730", "#4a1f28", "#3a1820", "#5a2030", "#692730", "#4a1f28"]
+
     for i, company in enumerate(companies):
         ct      = [t for t in todos if t["company"] == company]
         visible = [t for t in ct if t["status"] != "Done" or show_done]
@@ -701,21 +694,12 @@ def tab_by_company(todos: list[dict]) -> None:
         if gdata is not None and sync_grid(gdata, scope_ids):
             st.rerun()
 
-        grid_actions(sel_id, f"co_{company[:8]}")
+        grid_action_row(sel_id, f"co_{company[:8]}")
         st.markdown('<div class="sg-hint">Duplo clique para editar</div>',
                     unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
-def render_stats_company(todos: list[dict], companies: list[str], top: str) -> None:
-    st.markdown(f"""
-<div class="sg-stats">
-  <div class="sg-stat"><div class="sg-stat-value">{len(companies)}</div><div class="sg-stat-label">Companhias</div></div>
-  <div class="sg-stat"><div class="sg-stat-value" style="color:#1d4a8a">{open_count(todos)}</div><div class="sg-stat-label">Open</div></div>
-  <div class="sg-stat"><div class="sg-stat-value" style="color:#b87820">{sum(1 for t in todos if t.get("waiting_on_them"))}</div><div class="sg-stat-label">Aguardando</div></div>
-  <div class="sg-stat"><div class="sg-stat-value" style="color:#692730;font-size:0.9rem">{top}</div><div class="sg-stat-label">Mais Pendências</div></div>
-</div>""", unsafe_allow_html=True)
-
-# ── Tab: Weekly Summary ───────────────────────────────────────────────────────
+# ── Tab: Weekly Summary ────────────────────────────────────────────────────────
 
 def tab_summary(todos: list[dict]) -> None:
     today = date.today().strftime("%d/%m/%Y")
@@ -769,7 +753,7 @@ def tab_summary(todos: list[dict]) -> None:
                            file_name=f"todos_{date.today()}.csv",
                            mime="text/csv", key="dl_csv")
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     init_state()
