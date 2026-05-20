@@ -24,8 +24,8 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-DATA_FILE = Path("todos.json")
-LOGO_PATH = Path("assets/logo.png")
+DATA_FILE = Path(__file__).parent / "todos.json"
+LOGO_PATH = Path(__file__).parent / "assets" / "logo.png"
 
 PEOPLE = {
     "AM": {"color": "#ffffff", "bg": "#692730"},
@@ -108,6 +108,31 @@ if JsCode is not None:
         "sg-row-waiting": JsCode("function(params) { return params.data && params.data.waiting === true; }")
     }
 
+# Delete-column cell renderer: renders a ✕ icon; clicking sets the cell value to true
+_DELETE_RENDERER = None
+if JsCode is not None:
+    _DELETE_RENDERER = JsCode("""
+function(params) {
+    if (!params.data) return '';
+    var span = document.createElement('span');
+    span.innerHTML = '✕';
+    span.title = 'Excluir';
+    span.style.cssText = 'display:block;text-align:center;cursor:pointer;color:#d4b8b8;'
+        + 'font-size:13px;line-height:52px;user-select:none;transition:color 0.1s;';
+    span.addEventListener('mouseenter', function() {
+        span.style.color = '#a03030'; span.style.fontWeight = '700';
+    });
+    span.addEventListener('mouseleave', function() {
+        span.style.color = '#d4b8b8'; span.style.fontWeight = '400';
+    });
+    span.addEventListener('click', function(e) {
+        e.stopPropagation();
+        params.setValue(true);
+    });
+    return span;
+}
+""")
+
 # ── Persistence ────────────────────────────────────────────────────────────────
 
 def load_data() -> list[dict]:
@@ -129,6 +154,8 @@ def init_state() -> None:
         st.session_state.show_done = True
     if "show_add_form" not in st.session_state:
         st.session_state.show_add_form = False
+    if "at_last_sel" not in st.session_state:
+        st.session_state["at_last_sel"] = None
 
 def flush() -> None:
     save_data(st.session_state.todos)
@@ -156,8 +183,9 @@ def sort_by_company(todos: list[dict]) -> list[dict]:
 
 # ── AG Grid core ───────────────────────────────────────────────────────────────
 
-def todos_to_df(todos: list[dict], with_owner: bool = False) -> pd.DataFrame:
+def todos_to_df(todos: list[dict], with_owner: bool = False, with_delete: bool = False) -> pd.DataFrame:
     rows = [{
+        "_del":        False,
         "id":          t.get("id", ""),
         "owner":       t.get("owner", ""),
         "company":     t.get("company", ""),
@@ -168,30 +196,45 @@ def todos_to_df(todos: list[dict], with_owner: bool = False) -> pd.DataFrame:
         "category":    t.get("category", CATEGORIES[0]),
         "updated":     t.get("updated", ""),
     } for t in todos]
-    # Column order determines display order in AgGrid.
-    # Owner comes first when shown; waiting always before status.
-    if with_owner:
-        cols = ["owner", "company", "notes", "description", "waiting", "status", "updated", "id", "category"]
+    # Column order = display order in AgGrid.
+    # _del pinned-left delete icon; owner first when shown; waiting always before status.
+    if with_delete and with_owner:
+        cols = ["_del", "owner", "company", "notes", "description", "waiting", "status", "updated", "id", "category"]
+    elif with_owner:
+        cols = ["owner", "company", "notes", "description", "waiting", "status", "updated", "id", "category", "_del"]
     else:
-        cols = ["company", "notes", "description", "waiting", "status", "updated", "id", "category", "owner"]
+        cols = ["company", "notes", "description", "waiting", "status", "updated", "id", "category", "owner", "_del"]
     df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
     df["waiting"] = df["waiting"].astype(bool)
+    df["_del"]    = df["_del"].astype(bool)
     return df
 
-def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tuple:
+def make_grid(todos: list[dict], with_owner: bool = False, with_delete: bool = False, key: str = "g") -> tuple:
     """Render AG Grid. Returns (response_df | None, selected_id | None)."""
     if not todos:
         st.markdown('<p style="font-size:0.8rem;color:#a09080;padding:0.4rem 0">Sem itens.</p>',
                     unsafe_allow_html=True)
         return None, None
 
-    df = todos_to_df(sort_by_company(todos), with_owner=with_owner)
+    df = todos_to_df(sort_by_company(todos), with_owner=with_owner, with_delete=with_delete)
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(
         editable=False, resizable=True, sortable=False,
         filter=False, suppressMenu=True, suppressMovable=True,
         cellStyle={"fontFamily": "'DM Sans', sans-serif"},
     )
+
+    # Delete column: pinned left, ✕ icon renderer (only in tab_all_todos)
+    if with_delete and _DELETE_RENDERER:
+        gb.configure_column(
+            "_del", headerName="", width=42, editable=True,
+            pinned="left",
+            cellRenderer=_DELETE_RENDERER,
+            cellStyle={"padding": "0", "borderRight": "1px solid #e8e2d8"},
+            suppressSizeToFit=True,
+        )
+    else:
+        gb.configure_column("_del", hide=True)
 
     # Hidden columns
     gb.configure_column("id",       hide=True)
@@ -257,7 +300,7 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
 
     gb.configure_grid_options(**grid_opts)
 
-    use_jscode = JsCode is not None and bool(_ROW_CLASS_RULES)
+    use_jscode = JsCode is not None and (bool(_ROW_CLASS_RULES) or (with_delete and _DELETE_RENDERER is not None))
     resp = AgGrid(
         df,
         gridOptions=gb.build(),
@@ -279,7 +322,7 @@ def make_grid(todos: list[dict], with_owner: bool = False, key: str = "g") -> tu
 
     return resp.get("data"), sel_id
 
-def sync_grid(grid_df, scope_ids: list[str]) -> bool:
+def sync_grid(grid_df, scope_ids: list[str], with_delete: bool = False) -> bool:
     """Apply edits from the grid back to session_state. Returns True if anything changed."""
     if grid_df is None:
         return False
@@ -288,7 +331,22 @@ def sync_grid(grid_df, scope_ids: list[str]) -> bool:
     except Exception:
         return False
 
+    # Process in-grid deletions (✕ icon clicked)
     changed = False
+    if with_delete and "_del" in grid_df.columns:
+        to_delete = {
+            str(row.get("id", "")).strip()
+            for row in rows
+            if bool(row.get("_del", False)) and str(row.get("id", "")).strip() in scope_ids
+        }
+        if to_delete:
+            st.session_state.todos = [t for t in st.session_state.todos if t["id"] not in to_delete]
+            # Clear stale selection if deleted
+            if st.session_state.get("at_last_sel") in to_delete:
+                st.session_state["at_last_sel"] = None
+            flush()
+            changed = True
+
     for row in rows:
         tid = str(row.get("id", "")).strip()
         if tid not in scope_ids:
@@ -617,6 +675,7 @@ def tab_by_person(todos: list[dict]) -> None:
 # ── Tab: All To-Dos ────────────────────────────────────────────────────────────
 
 def tab_all_todos(todos: list[dict]) -> None:
+    # ── Filters ──
     fc1, fc2, fc3, fc4, fc5 = st.columns([2, 2, 2, 2, 3])
     with fc1: f_owner   = st.multiselect("Responsável", list(PEOPLE.keys()), key="f_own")
     with fc2:
@@ -640,6 +699,41 @@ def tab_all_todos(todos: list[dict]) -> None:
     if not fil:
         st.info("Nenhum item encontrado."); return
 
+    # ── Action bar (add-above + delete selected) ──
+    at_sel = st.session_state.get("at_last_sel")
+    at_ref  = get_todo(at_sel) if at_sel else None
+    sel_label = f"  ·  {at_ref['company']} — {at_ref['description'][:40]}…" if at_ref else ""
+
+    ba1, ba2, _ = st.columns([3.2, 2.8, 7])
+    with ba1:
+        if st.button(f"＋ Nova linha acima{sel_label}", key="at_add_above",
+                     disabled=not at_ref, type="primary" if at_ref else "secondary"):
+            new_todo = {
+                "id":              str(uuid.uuid4()),
+                "owner":           at_ref["owner"],
+                "company":         at_ref["company"],
+                "notes":           "",
+                "description":     "",
+                "status":          "Open",
+                "category":        at_ref.get("category", CATEGORIES[0]),
+                "waiting_on_them": False,
+                "created":         str(date.today()),
+                "updated":         str(date.today()),
+            }
+            # Insert immediately before the reference row (stable sort keeps it above)
+            idx = next((i for i, t in enumerate(st.session_state.todos) if t["id"] == at_sel),
+                       len(st.session_state.todos))
+            st.session_state.todos.insert(idx, new_todo)
+            flush()
+            st.session_state["at_last_sel"] = None
+            st.rerun()
+    with ba2:
+        if at_ref and st.button("✕ Excluir selecionada", key="at_del_sel"):
+            delete_todo(at_sel)
+            st.session_state["at_last_sel"] = None
+            st.rerun()
+
+    # ── Grids by category ──
     for cat in CATEGORIES:
         cat_items = sort_by_company([t for t in fil if t.get("category", CATEGORIES[0]) == cat])
         if not cat_items: continue
@@ -648,13 +742,18 @@ def tab_all_todos(todos: list[dict]) -> None:
                     unsafe_allow_html=True)
 
         scope_ids = [t["id"] for t in cat_items]
-        gdata, sel_id = make_grid(cat_items, with_owner=True, key=f"g_at_{cat[:5]}")
-        if gdata is not None and sync_grid(gdata, scope_ids):
+        gdata, sel_id = make_grid(cat_items, with_owner=True, with_delete=True, key=f"g_at_{cat[:5]}")
+
+        # Persist the last row selected (any category) for the action bar
+        if sel_id:
+            st.session_state["at_last_sel"] = sel_id
+
+        if gdata is not None and sync_grid(gdata, scope_ids, with_delete=True):
             st.rerun()
 
-        grid_action_row(sel_id, f"at_{cat[:4]}")
-        st.markdown('<div class="sg-hint">Resp. é a primeira coluna &nbsp;·&nbsp; '
-                    'Duplo clique para editar</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sg-hint">✕ na primeira coluna para excluir &nbsp;·&nbsp; '
+                    'Clique para selecionar &nbsp;·&nbsp; Duplo clique para editar</div>',
+                    unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Tab: By Company ────────────────────────────────────────────────────────────
